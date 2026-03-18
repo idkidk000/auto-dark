@@ -1,0 +1,36 @@
+{
+  "fmt": {
+    "indentWidth": 2,
+    "lineWidth": 120,
+    "singleQuote": true,
+    "spaceSurroundingProperties": true,
+    "trailingCommas": "onlyMultiLine",
+    "useBraces": "preferNone"
+  },
+  "imports": {
+    "@/": "./",
+    "@std/dotenv": "jsr:@std/dotenv@^0.225.6",
+    "@zod/zod": "jsr:@zod/zod@^4.3.6"
+  },
+  "lint": {
+    "rules": {
+      "include": [
+        "default-param-last",
+        "eqeqeq",
+        "no-eval",
+        "no-non-null-asserted-optional-chain",
+        "no-non-null-assertion",
+        "no-useless-rename",
+        "prefer-ascii",
+        "single-var-declarator",
+        "triple-slash-reference",
+        "valid-typeof"
+      ],
+      "tags": [
+        "recommended"
+      ]
+    }
+  },
+  "minimumDependencyAge": "P2D",
+  "tasks": {}
+}
