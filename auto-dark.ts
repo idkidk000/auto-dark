@@ -1,55 +1,102 @@
 #!/usr/bin/env -S deno --allow-env --allow-read --allow-run --allow-net
 
+// #region imports, types
 import '@std/dotenv/load';
-import {Buffer} from 'node:buffer';
-import {spawnSync} from 'node:child_process';
-import {Console} from 'node:console';
-import {join} from 'node:path';
-import {argv, env, exit, stderr, stdin, stdout} from 'node:process';
+import { Buffer } from 'node:buffer';
+import { spawnSync } from 'node:child_process';
+import { Console } from 'node:console';
+import { join } from 'node:path';
+import { argv, env, exit, stderr, stdin, stdout } from 'node:process';
 
-type GtkSettings = Record<'color-scheme' | 'gtk-theme' | 'icon-theme', { dark: string; light: string }>;
-type KdeSettings = Record<'global-theme' | 'color-scheme', { dark: string; light: string }>;
+interface DarkLightSetting {
+  /** setting to apply when dark */
+  dark: string;
+  /** setting to apply when light */
+  light: string;
+}
+interface GtkSettings {
+  /** from `gsettings get org.gnome.desktop.interface color-scheme` */
+  'color-scheme': DarkLightSetting;
+  /** from `gsettings get org.gnome.desktop.interface gtk-theme` */
+  'gtk-theme': DarkLightSetting;
+  /** from `gsettings get org.gnome.desktop.interface icon-theme` */
+  'icon-theme': DarkLightSetting;
+}
+interface KdeSettings {
+  /** from `plasma-apply-colorscheme -l` */
+  'color-scheme': DarkLightSetting;
+  /** from `plasma-apply-lookandfeel -l` */
+  'global-theme': DarkLightSetting;
+}
 interface HassSettings {
+  /** e.g. `http://hass.local:8123/`, `https://hass.local/` */
   baseUrl: string;
+  /** long-lived access token */
   token: string;
-  lightSensor: string;
-  darkSensor: string;
+  /** seconds which sensor values must be stable for to be considered valid */
   debounceSeconds: number;
+  /** hass binary sensor entity ids */
+  sensors: {
+    /** binary sensor which is `on` when dark */
+    dark: `binary_sensor.${string}`;
+    /** binary sensor which is `on` when light */
+    light: `binary_sensor.${string}`;
+  };
+}
+interface ScriptSettings {
+  /** wakeup frequency during waits to check for elapsed time - necessary to detect system resume from sleep */
+  pollSeconds: number;
+  /** how frequently to check home assistant sensor state */
+  checkSeconds: number;
+  /** retry seconds if error during getting sensors or setting theme */
+  retrySeconds: number;
+  /** which theme manager to use */
+  managerMode: 'gtk' | 'kde';
+  /** which sensor source to use */
+  sensorMode: 'hass';
+  /** whether to enable the tui. may cause problems if enabled while running as a login script. can be overridden with `-tui` and `-no-tui` */
+  tui: boolean;
 }
 
+// deno-lint-ignore ban-types
+type KeyboardKey = string & {};
+
+function envOrThrow(name: string): string {
+  if (typeof env[name] === 'string') return env[name];
+  throw new Error(`Undefined env var: ${name}`);
+}
+// #endregion
+
 // #region constants
-const HASS_URL = env.HASS_URL;
-const HASS_TOKEN = env.HASS_TOKEN;
-
-const DARK_SENSOR = 'binary_sensor.lamp_light_level_on';
-const LIGHT_SENSOR = 'binary_sensor.lamp_light_level_off';
-
-/** wakeup frequency during waits to check for elapsed time - necessary to detect system resume from sleep */
-const POLL_SECONDS = 1;
-/** sensor check seconds */
-const CHECK_SECONDS = 60;
-/** retry seconds if error during getting sensors or setting theme */
-const RETRY_SECONDS = 3;
-/** seconds which sensor values must be stable for to be considered valid */
-const DEBOUNCE_SECONDS = 900;
-
 const GTK_SETTINGS: GtkSettings = {
-  /** from `gsettings get org.gnome.desktop.interface color-scheme` */
   'color-scheme': { dark: 'prefer-dark', light: 'default' },
-  /** from `gsettings get org.gnome.desktop.interface gtk-theme` */
   'gtk-theme': { dark: 'Yaru-purple-dark', light: 'Yaru-purple' },
-  /** from `gsettings get org.gnome.desktop.interface icon-theme` */
   'icon-theme': { dark: 'Yaru-purple-dark', light: 'Yaru-purple' },
 };
 
 const KDE_SETTINGS: KdeSettings = {
-  /** from `plasma-apply-lookandfeel -l` */
   'global-theme': { dark: 'org.kde.breezedark.desktop', light: 'org.kde.breeze.desktop' },
-  /** from `plasma-apply-colorscheme -l` */
   'color-scheme': { dark: 'Breeze Purple', light: 'BreezeLight' },
 };
 
-const MODE: 'gtk' | 'kde' = 'kde';
+const HASS_SETTINGS: HassSettings = {
+  baseUrl: envOrThrow('HASS_URL'),
+  token: envOrThrow('HASS_TOKEN'),
+  debounceSeconds: 900,
+  sensors: {
+    dark: 'binary_sensor.lamp_light_level_on',
+    light: 'binary_sensor.lamp_light_level_off',
+  },
+};
+
+const SCRIPT_SETTINGS: ScriptSettings = {
+  pollSeconds: 1,
+  checkSeconds: 60,
+  retrySeconds: 3,
+  managerMode: 'kde',
+  sensorMode: 'hass',
+  tui: false,
+};
 // #endregion
 
 // #region logger
@@ -201,15 +248,16 @@ class HassSensors extends Sensors<HassSettings> {
   }
 
   override async isDark(): Promise<boolean | null> {
-    const result = (await this.#read(this.settings.lightSensor))
+    const result = (await this.#read(this.settings.sensors.light))
       ? false
-      : (await this.#read(this.settings.darkSensor)) || null;
+      : (await this.#read(this.settings.sensors.dark)) || null;
     this.#logger.debug('isDark', { result });
     return result;
   }
 }
 // #endregion
 
+// #region utils
 // there is no trivial way to get an event on system resume. so polling :|
 class Waiter {
   constructor(private readonly pollSeconds: number) {}
@@ -226,13 +274,10 @@ class Waiter {
   }
 }
 
-// deno-lint-ignore ban-types
-type KeyboardKey = string & {};
-
 class Tui {
   #logger = rootLogger.make('Tui');
 
-  constructor(private readonly commands: Record<KeyboardKey, { label: string; callback: () => unknown }>) {
+  constructor(private readonly commands: Record<KeyboardKey, [label: string, callback: () => unknown]>) {
     stdin.setRawMode(true);
     stdin.addListener('data', (data) => this.#handleKeyPress(data));
   }
@@ -241,14 +286,14 @@ class Tui {
     const key = data.toString();
     const command = this.commands[key];
     if (command) {
-      this.#logger.info(command.label);
+      this.#logger.info(command[0]);
       try {
-        command.callback();
+        command[1]();
       } catch (error) {
         this.#logger.error(error);
       }
     } else if (['?', 'h'].includes(key))
-      Object.entries(this.commands).forEach(([key, value]) => this.#logger.info({ key }, value.label));
+      Object.entries(this.commands).forEach(([key, value]) => this.#logger.info({ key }, value[0]));
     else this.#logger.warn('unhandled', { key });
   }
 
@@ -257,56 +302,48 @@ class Tui {
     stdin.setRawMode(false);
   }
 }
+// #endregion
 
 async function main() {
-  if (typeof HASS_URL !== 'string') throw new Error('HASS_URL env var is not defined');
-  if (typeof HASS_TOKEN !== 'string') throw new Error('HASS_TOKEN env var is not defined');
-
   const logger = rootLogger.make('main');
 
-  const manager = MODE === 'kde' ? new KdeManager(KDE_SETTINGS) : MODE === 'gtk' ? new GtkManager(GTK_SETTINGS) : null;
-  if (manager === null) throw new Error('unhandled MODE');
+  const manager = SCRIPT_SETTINGS.managerMode === 'kde'
+    ? new KdeManager(KDE_SETTINGS)
+    : SCRIPT_SETTINGS.managerMode === 'gtk'
+    ? new GtkManager(GTK_SETTINGS)
+    : null;
+  if (manager === null) throw new Error(`Unhandled managerMode: ${SCRIPT_SETTINGS.managerMode}`);
 
-  const sensors = new HassSensors({
-    baseUrl: HASS_URL,
-    token: HASS_TOKEN,
-    darkSensor: DARK_SENSOR,
-    lightSensor: LIGHT_SENSOR,
-    debounceSeconds: DEBOUNCE_SECONDS,
-  });
+  const sensors = SCRIPT_SETTINGS.sensorMode === 'hass' ? new HassSensors(HASS_SETTINGS) : null;
+  if (sensors === null) throw new Error(`Unhandled sensorMode: ${SCRIPT_SETTINGS.sensorMode}`);
 
-  const waiter = new Waiter(POLL_SECONDS);
-
-  const options = { tui: false };
+  const waiter = new Waiter(SCRIPT_SETTINGS.pollSeconds);
 
   for (const arg of argv.slice(2)) {
-    if (arg === '-no-tui') options.tui = false;
-    else if (arg === '-tui') options.tui = true;
-    else throw new Error(`unknown arg ${arg}`);
+    if (arg === '-no-tui') SCRIPT_SETTINGS.tui = false;
+    else if (arg === '-tui') SCRIPT_SETTINGS.tui = true;
+    else throw new Error(`Unhandled arg: ${arg}`);
   }
 
-  if (options.tui) {
+  if (SCRIPT_SETTINGS.tui) {
     new Tui({
-      a: {
-        label: 'manager.set(auto)',
-        callback: () =>
+      a: [
+        'manager.set(auto)',
+        () =>
           sensors.isDark().then((
             dark,
           ) => (dark === null ? logger.warn('sensors.isDark', dark) : manager.setDark(dark))),
-      },
-      d: { label: 'manager.setDark(true)', callback: () => manager.setDark(true) },
-      l: { label: 'manager.setDark(false)', callback: () => manager.setDark(false) },
-      s: {
-        label: 'sensors.isDark',
-        callback: () => sensors.isDark().then((dark) => logger.info('sensors.isDark', dark)),
-      },
-      '1': { label: 'rootLogger.level=LogLevel.TRACE', callback: () => rootLogger.level = LogLevel.TRACE },
-      '2': { label: 'rootLogger.level=LogLevel.DEBUG', callback: () => rootLogger.level = LogLevel.DEBUG },
-      '3': { label: 'rootLogger.level=LogLevel.INFO', callback: () => rootLogger.level = LogLevel.INFO },
-      '4': { label: 'rootLogger.level=LogLevel.WARN', callback: () => rootLogger.level = LogLevel.WARN },
-      '5': { label: 'rootLogger.level=LogLevel.ERROR', callback: () => rootLogger.level = LogLevel.ERROR },
-      q: { label: 'exit', callback: () => exit(0) },
-      '\x03': { label: 'exit', callback: () => exit(0) },
+      ],
+      d: ['manager.setDark(true)', () => manager.setDark(true)],
+      l: ['manager.setDark(false)', () => manager.setDark(false)],
+      s: ['sensors.isDark', () => sensors.isDark().then((dark) => logger.info('sensors.isDark', dark))],
+      '1': ['rootLogger.level=LogLevel.TRACE', () => rootLogger.level = LogLevel.TRACE],
+      '2': ['rootLogger.level=LogLevel.DEBUG', () => rootLogger.level = LogLevel.DEBUG],
+      '3': ['rootLogger.level=LogLevel.INFO', () => rootLogger.level = LogLevel.INFO],
+      '4': ['rootLogger.level=LogLevel.WARN', () => rootLogger.level = LogLevel.WARN],
+      '5': ['rootLogger.level=LogLevel.ERROR', () => rootLogger.level = LogLevel.ERROR],
+      q: ['exit', () => exit(0)],
+      '\x03': ['exit', () => exit(0)],
     });
   }
 
@@ -321,10 +358,10 @@ async function main() {
         if (result) settingsDark = sensorsDark;
       } else if (initial) { logger.info({ settingsDark, sensorsDark }); }
       if (initial) initial = false;
-      await waiter.wait(CHECK_SECONDS);
+      await waiter.wait(SCRIPT_SETTINGS.checkSeconds);
     } catch (error) {
       logger.error(String(error));
-      await waiter.wait(RETRY_SECONDS);
+      await waiter.wait(SCRIPT_SETTINGS.retrySeconds);
     }
   }
 }

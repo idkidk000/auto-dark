@@ -17,10 +17,11 @@ provided through environment variables or a `.env` file
 
 - Add two binary sensors to Home Assistant, i.e. `binary_sensor.is_light` and `binary_sensor.is_dark`. Set them to be
   active according to your preferences. I like to keep a large dead zone where neither is active to prevent hysteresis
+- Create a `Long-lived access token` in Home Assistant
 - Add `HASS_URL` and `HASS_TOKEN` to a `.env` file
 - Edit the `constants` region at the top of the script per your preferences
 - `deno i`
-- Add `auto-dark.ts` as a login script or run it in a a terminal with `-tui` to enable to TUI
+- Add `auto-dark.sh` (not `auto-dark.ts` directly) as a login script or run `auto-dark.ts -tui` in a a terminal
 
 ### Args
 
@@ -35,3 +36,4 @@ provided through environment variables or a `.env` file
 - `s`: show sensor dark state
 - `1|2|3|4|5`: adjust log level between `Trace` and `Error`
 - `q|ctrl+c`: quit
+- `h|?`: list TUI commands
