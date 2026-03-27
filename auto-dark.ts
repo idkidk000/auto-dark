@@ -76,7 +76,7 @@ const GTK_SETTINGS: GtkSettings = {
 
 const KDE_SETTINGS: KdeSettings = {
   'global-theme': { dark: 'org.kde.breezedark.desktop', light: 'org.kde.breeze.desktop' },
-  'color-scheme': { dark: 'Breeze Purple', light: 'BreezeLight' },
+  'color-scheme': { dark: 'Breeze Lavendar Dark', light: 'Breeze Lavendar Light' },
 };
 
 const HASS_SETTINGS: HassSettings = {
