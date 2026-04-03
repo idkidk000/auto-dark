@@ -1,7 +1,7 @@
 #!/usr/bin/env -S deno --allow-env --allow-read --allow-run --allow-net
 
 // #region imports, types
-import '@std/dotenv/load';
+import { load } from '@std/dotenv';
 import { Buffer } from 'node:buffer';
 import { spawnSync } from 'node:child_process';
 import { Console } from 'node:console';
@@ -60,6 +60,9 @@ interface ScriptSettings {
 
 // deno-lint-ignore ban-types
 type KeyboardKey = string & {};
+
+// deno-lint-ignore no-non-null-assertion
+await load({ envPath: join(import.meta.dirname!, '.env'), export: true });
 
 function envOrThrow(name: string): string {
   if (typeof env[name] === 'string') return env[name];
